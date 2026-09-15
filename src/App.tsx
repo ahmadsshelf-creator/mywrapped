@@ -1,4 +1,4 @@
-// Updated App component with all routes and persistent player
+// Updated App component with PlaylistDetail route
 
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
@@ -10,6 +10,7 @@ import { Onboarding } from './components/Onboarding';
 import { Home } from './pages/Home';
 import { Library } from './pages/Library';
 import { Playlists } from './pages/Playlists';
+import { PlaylistDetail } from './pages/PlaylistDetail';
 import { Favorites } from './pages/Favorites';
 import { Wrapped } from './pages/Wrapped';
 import { Badges } from './pages/Badges';
@@ -44,6 +45,7 @@ const AppContent: React.FC = () => {
               <Route path="/" element={<Home />} />
               <Route path="/library" element={<Library />} />
               <Route path="/playlists" element={<Playlists />} />
+              <Route path="/playlist/:id" element={<PlaylistDetail />} />
               <Route path="/favorites" element={<Favorites />} />
               <Route path="/wrapped" element={<Wrapped />} />
               <Route path="/badges" element={<Badges />} />
