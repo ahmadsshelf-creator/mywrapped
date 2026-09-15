@@ -1,4 +1,4 @@
-// Music context for managing library and playback state
+// Fixed Music context for managing library and playback state
 
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import {
@@ -18,7 +18,6 @@ import {
   DB_STORES,
 } from '../utils/storage';
 import { shouldCountAsPlayed } from '../utils/statistics';
-import { v4 as uuidv4 } from 'crypto';
 
 function generateId(): string {
   return Math.random().toString(36).substring(2, 11);
@@ -92,6 +91,7 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const listeningSessionRef = useRef<{ startTime: number; songId: string } | null>(null);
+  const playNextCallbackRef = useRef<() => void>();
 
   // Load initial data
   useEffect(() => {
@@ -119,6 +119,70 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     })();
   }, []);
 
+  const recordListeningSessionImpl = useCallback(
+    async (songId: string, listeningDuration: number) => {
+      const song = songs.find((s) => s.id === songId);
+      if (!song) return;
+
+      const counted = shouldCountAsPlayed(listeningDuration, song.duration);
+      const now = new Date();
+      const date = now.toISOString().split('T')[0];
+      const hour = now.getHours();
+
+      const session: ListeningSession = {
+        id: generateId(),
+        songId,
+        startTime: Date.now(),
+        endTime: Date.now(),
+        listeningDuration,
+        date,
+        hour,
+        counted,
+      };
+
+      await saveToDB(DB_STORES.LISTENING_SESSIONS, session);
+      setSessions((prev) => [...prev, session]);
+
+      // Update song stats
+      if (counted) {
+        const newPlayCount = song.playCount + 1;
+        const updated: Song = {
+          ...song,
+          playCount: newPlayCount,
+          lastPlayed: Date.now(),
+        };
+        await saveToDB(DB_STORES.SONGS, updated);
+        setSongs((prev) => prev.map((s) => (s.id === songId ? updated : s)));
+      }
+    },
+    [songs]
+  );
+
+  playNextCallbackRef.current = () => {
+    // Record current session if threshold met
+    if (listeningSessionRef.current && audioRef.current) {
+      const duration = audioRef.current.currentTime;
+      recordListeningSessionImpl(listeningSessionRef.current.songId, duration);
+    }
+
+    if (queue.length === 0) return;
+
+    const nextIndex = (queueIndex + 1) % queue.length;
+    setQueueIndex(nextIndex);
+    const nextSong = queue[nextIndex];
+    const song = songs.find((s) => s.id === nextSong.songId);
+    if (song && song.fileUrl && audioRef.current) {
+      audioRef.current.src = song.fileUrl;
+      audioRef.current.play().catch((err) => console.error('Playback error:', err));
+      setCurrentSongId(nextSong.songId);
+      setCurrentTime(0);
+      listeningSessionRef.current = {
+        startTime: Date.now(),
+        songId: nextSong.songId,
+      };
+    }
+  };
+
   // Audio element setup
   useEffect(() => {
     if (!audioRef.current) return;
@@ -128,7 +192,11 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const handlePlay = () => setPlaybackState(PlaybackState.Playing);
     const handlePause = () => setPlaybackState(PlaybackState.Paused);
     const handleTimeUpdate = () => setCurrentTime(audio.currentTime);
-    const handleEnded = () => playNext();
+    const handleEnded = () => {
+      if (playNextCallbackRef.current) {
+        playNextCallbackRef.current();
+      }
+    };
 
     audio.addEventListener('play', handlePlay);
     audio.addEventListener('pause', handlePause);
@@ -160,23 +228,29 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setSongs((prev) => prev.filter((s) => s.id !== songId));
   }, []);
 
-  const updateSongMetadata = useCallback(async (songId: string, updates: Partial<Song>) => {
-    const song = songs.find((s) => s.id === songId);
-    if (!song) return;
+  const updateSongMetadata = useCallback(
+    async (songId: string, updates: Partial<Song>) => {
+      const song = songs.find((s) => s.id === songId);
+      if (!song) return;
 
-    const updated = { ...song, ...updates };
-    await saveToDB(DB_STORES.SONGS, updated);
-    setSongs((prev) => prev.map((s) => (s.id === songId ? updated : s)));
-  }, [songs]);
+      const updated = { ...song, ...updates };
+      await saveToDB(DB_STORES.SONGS, updated);
+      setSongs((prev) => prev.map((s) => (s.id === songId ? updated : s)));
+    },
+    [songs]
+  );
 
-  const toggleFavorite = useCallback(async (songId: string) => {
-    const song = songs.find((s) => s.id === songId);
-    if (!song) return;
+  const toggleFavorite = useCallback(
+    async (songId: string) => {
+      const song = songs.find((s) => s.id === songId);
+      if (!song) return;
 
-    const updated = { ...song, isFavorite: !song.isFavorite };
-    await saveToDB(DB_STORES.SONGS, updated);
-    setSongs((prev) => prev.map((s) => (s.id === songId ? updated : s)));
-  }, [songs]);
+      const updated = { ...song, isFavorite: !song.isFavorite };
+      await saveToDB(DB_STORES.SONGS, updated);
+      setSongs((prev) => prev.map((s) => (s.id === songId ? updated : s)));
+    },
+    [songs]
+  );
 
   const play = useCallback(
     (songId: string) => {
@@ -238,29 +312,29 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   const playNext = useCallback(() => {
-    // Record current session if threshold met
-    if (listeningSessionRef.current && audioRef.current) {
-      const duration = audioRef.current.currentTime;
-      recordListeningSession(
-        listeningSessionRef.current.songId,
-        duration
-      );
+    if (playNextCallbackRef.current) {
+      playNextCallbackRef.current();
     }
-
-    if (queue.length === 0) return;
-
-    const nextIndex = (queueIndex + 1) % queue.length;
-    setQueueIndex(nextIndex);
-    play(queue[nextIndex].songId);
-  }, [queue, queueIndex]);
+  }, []);
 
   const playPrevious = useCallback(() => {
     if (queue.length === 0) return;
 
     const prevIndex = queueIndex === 0 ? queue.length - 1 : queueIndex - 1;
     setQueueIndex(prevIndex);
-    play(queue[prevIndex].songId);
-  }, [queue, queueIndex]);
+    const prevSong = queue[prevIndex];
+    const song = songs.find((s) => s.id === prevSong.songId);
+    if (song && song.fileUrl && audioRef.current) {
+      audioRef.current.src = song.fileUrl;
+      audioRef.current.play().catch((err) => console.error('Playback error:', err));
+      setCurrentSongId(prevSong.songId);
+      setCurrentTime(0);
+      listeningSessionRef.current = {
+        startTime: Date.now(),
+        songId: prevSong.songId,
+      };
+    }
+  }, [queue, queueIndex, songs]);
 
   const createPlaylist = useCallback(async (name: string, description?: string) => {
     const playlist: Playlist = {
@@ -328,52 +402,19 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     [playlists]
   );
 
-  const recordListeningSession = useCallback(
-    async (songId: string, listeningDuration: number) => {
-      const song = songs.find((s) => s.id === songId);
-      if (!song) return;
-
-      const counted = shouldCountAsPlayed(listeningDuration, song.duration);
-      const now = new Date();
-      const date = now.toISOString().split('T')[0];
-      const hour = now.getHours();
-
-      const session: ListeningSession = {
-        id: generateId(),
-        songId,
-        startTime: Date.now(),
-        endTime: Date.now(),
-        listeningDuration,
-        date,
-        hour,
-        counted,
-      };
-
-      await saveToDB(DB_STORES.LISTENING_SESSIONS, session);
-      setSessions((prev) => [...prev, session]);
-
-      // Update song stats
-      if (counted) {
-        const newPlayCount = song.playCount + 1;
-        await updateSongMetadata(songId, {
-          playCount: newPlayCount,
-          lastPlayed: Date.now(),
-        });
-      }
-    },
-    [songs, updateSongMetadata]
-  );
-
   const refreshStats = useCallback(async () => {
     const loadedStats = await getAllFromDB<DailyStats>(DB_STORES.DAILY_STATS);
     setDailyStats(loadedStats);
   }, []);
 
-  const updateSettings = useCallback(async (updates: Partial<AppSettings>) => {
-    const updated = { ...settings, ...updates };
-    await saveToDB(DB_STORES.SETTINGS, { key: 'app-settings', ...updated });
-    setSettings(updated);
-  }, [settings]);
+  const updateSettings = useCallback(
+    async (updates: Partial<AppSettings>) => {
+      const updated = { ...settings, ...updates };
+      await saveToDB(DB_STORES.SETTINGS, { key: 'app-settings', ...updated });
+      setSettings(updated);
+    },
+    [settings]
+  );
 
   const value: MusicContextType = {
     songs,
@@ -402,7 +443,7 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     addSongToPlaylist,
     removeSongFromPlaylist,
     sessions,
-    recordListeningSession,
+    recordListeningSession: recordListeningSessionImpl,
     dailyStats,
     refreshStats,
     settings,
