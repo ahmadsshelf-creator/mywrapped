@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "A polished, modern music player web app with local music library, playlists, listening statistics, and daily Wrapped summaries.",
   "private": true,
+  "type": "module",
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
